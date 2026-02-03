@@ -1,145 +1,61 @@
 package main
 
 import (
+	"crud-api-task/database"
+	"crud-api-task/handlers"
+	"crud-api-task/models"
+	"crud-api-task/repositories"
+	"crud-api-task/services"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
+
+	"github.com/spf13/viper"
 )
 
-type Category struct {
-	ID    int     `json:"id"`
-	Name  string  `json:"name"`
-	Description string `json:"description"`
+type Config struct {
+	Port    string `mapstructure:"PORT"`
+	DBConn 	string `mapstructure:"DB_CONN"`
 }
 
-var categories = []Category{
+var categories = []models.Category{
 	{ID: 1, Name: "Electronics", Description: "Electronic devices"},
 	{ID: 2, Name: "Mobile", Description: "Mobile phones and accessories"},
 }
 
-// GET localhost:8080/categories/{id}
-func getCategoryByID(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/categories/")
-	id, err := strconv.Atoi(idStr)
-
-	if err != nil {
-		http.Error(w, "Invalid Category ID", http.StatusBadRequest)
-		return
-	}
-
-	for _, category := range categories {
-		if category.ID == id {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(category)
-			return
-		}
-	}
-
-	http.Error(w, "Category Not Found", http.StatusNotFound)
-}
-
-// PUT localhost:8080/categories/{id}
-func updateCategoryByID(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/categories/")
-	id, err := strconv.Atoi(idStr)
-	
-	if err != nil {
-		http.Error(w, "Invalid Category ID", http.StatusBadRequest)
-		return
-	}
-
-	var updatedCategory Category
-	err = json.NewDecoder(r.Body).Decode(&updatedCategory)
-
-	if err != nil {
-		http.Error(w, "Invalid Request", http.StatusBadRequest)
-		return
-	}
-
-	for i := range categories {
-		if categories[i].ID == id {
-			updatedCategory.ID = id
-			categories[i] = updatedCategory
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(updatedCategory)
-			return
-		}
-	}
-
-	http.Error(w, "Category Not Found", http.StatusNotFound)
-}
-
-// DELETE localhost:8080/categories/{id}
-func deleteCategoryByID(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/categories/")
-	id, err := strconv.Atoi(idStr)
-
-	if err != nil {
-		http.Error(w, "Invalid Request", http.StatusBadRequest)
-		return
-	}
-
-	for i, category := range categories {
-		if category.ID == id {
-			categories = append(categories[:i], categories[i+1:]...)
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{
-				"message": "Category Deleted Successfully",
-			})
-			return
-		}
-	}
-
-	http.Error(w, "Category Not Found", http.StatusNotFound)
-}
-
-// GET localhost:8080/categories
-func getCategories(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(categories)
-}
-
-// POST localhost:8080/categories
-func createCategory(w http.ResponseWriter, r *http.Request) {
-	var newCategory Category
-	err := json.NewDecoder(r.Body).Decode(&newCategory)
-	if err != nil {
-		http.Error(w, "Invalid Request", http.StatusBadRequest)
-		return
-	}
-
-	newCategory.ID = len(categories) + 1
-	categories = append(categories, newCategory)
-	
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newCategory)
-}
 
 func main() {
-	http.HandleFunc("/categories/", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-			case "GET":
-				getCategoryByID(w, r)
-			case "PUT":
-				updateCategoryByID(w, r)
-			case "DELETE":
-				deleteCategoryByID(w, r)
-		}
-	})
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
-	http.HandleFunc("/categories", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-			case "GET":
-				getCategories(w, r)
-			case "POST":
-				createCategory(w, r)
-		}
-	})
+	if _, err := os.Stat(".env"); err == nil {
+		viper.SetConfigFile(".env")
+		_ = viper.ReadInConfig()
+	}
+
+	config := Config{
+		Port: viper.GetString("PORT"),
+		DBConn: viper.GetString("DB_CONN"),
+	}
+
+	// Setup database
+	db, err := database.InitDB(config.DBConn)
+	if err != nil {
+		log.Fatal("Failed to initialize database:", err)
+	}
+	defer db.Close()
+
+	categoryRepo := repositories.NewCategoryRepository(db)
+	categoryService := services.NewCategoryService(categoryRepo)
+	categoryHandler := handlers.NewCategoryHandler(categoryService)
+
+	// Setup routes
+	http.HandleFunc("/api/categories/", categoryHandler.HandleCategoryByID)
+	http.HandleFunc("/api/categories", categoryHandler.HandleCategories)
+	http.HandleFunc("/api/category", categoryHandler.HandleCategory)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -149,8 +65,9 @@ func main() {
 		})
 	})
 
-	fmt.Println("Starting server on :8080")
-	err := http.ListenAndServe(":8080", nil)
+	fmt.Println("Starting server on :" + config.Port)
+
+	err = http.ListenAndServe(":" + config.Port, nil)
 
 	if err != nil {
 		fmt.Println("Server failed to start:", err)
